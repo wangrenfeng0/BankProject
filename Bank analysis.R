@@ -10,6 +10,7 @@ library(car)
 library(epitools)
 library(glmnet)
 library(reshape2)
+library(caret)
 setwd("C:/Users/wrf0/Documents/SMU Data Science Program/Applied Statistics/Project 2")
 bank <- read.csv("Bank_Full.csv",header=T)
 head(bank)
@@ -181,6 +182,7 @@ plot(housing~default,col=c("purple","green"))
 table(housing,default)
 #Hard to tell, we will run VIF after we build the model
 
+#Object 1
 #Make a 80-20 split
 newbank = bank[,c('job','marital','education','default','balance','housing','loan','contact','month','duration','poutcome','y')]
 dim(newbank)
@@ -189,3 +191,71 @@ index<-sample(1:nrow(newbank),round(.8*nrow(newbank)),replace=FALSE)
 test<-newbank[-index,]
 train<-newbank[index,]
 
+renfeng.full.log = glm(y~.,family='binomial',data=newbank)
+renfeng.step.log<-renfeng.full.log %>% stepAIC(trace=FALSE)
+coef(renfeng.full.log)
+coef(renfeng.step.log)
+vif(renfeng.step.log)  
+
+#LASSO model
+dat.train.x <- model.matrix(y~job+marital+education+default+balance+housing+loan+contact+month+duration+poutcome-1,train)
+dat.train.y<-train[,c('y')]
+cvfit <- cv.glmnet(dat.train.x, dat.train.y, family = "binomial", type.measure = "class", nlambda = 1000)
+plot(cvfit)
+coef(cvfit, s = "lambda.min")
+print(cvfit)
+
+cvfit$cvm[which(cvfit$lambda==cvfit$lambda.min)]
+
+cvfit$lambda.min
+
+finalmodel<-glmnet(dat.train.x, dat.train.y, family = "binomial",lambda=cvfit$lambda.min)
+coef(finalmodel)
+#We will use the predictors in final model to build a new model to do the hypothesis test.
+newmodel = glm(y~job+month+marital+education+balance+housing+loan+contact+poutcome+duration,family='binomial',data=newbank)
+summary(newmodel)
+confint.default(newmodel,level = 0.95)
+exp(cbind("Odds ratio" = coef(newmodel), confint.default(newmodel, level = 0.95)))
+#tmp_coeffs <- coef(cvfit, s = "lambda.min")
+#data.frame(name = tmp_coeffs@Dimnames[[1]][tmp_coeffs@i + 1], coefficient = tmp_coeffs@x)
+
+
+dat.test.x<-model.matrix(y~job+marital+education+default+balance+housing+loan+contact+month+duration+poutcome-1,test)
+fit.pred.lasso <- predict(finalmodel, newx = dat.test.x, type = "response")
+fit.pred.step<-predict(renfeng.step.log,newdata=test,type="response")
+
+cutoff<-0.5
+class.lasso<-factor(ifelse(fit.pred.lasso>cutoff,"yes","no"),levels=c("no","yes"))
+class.step<-factor(ifelse(fit.pred.step>cutoff,"yes","no"),levels=c("no","yes"))
+confusionMatrix(class.lasso,test$y)
+confusionMatrix(class.step,test$y)
+
+results.lasso<-prediction(fit.pred.lasso, test$y,label.ordering=c("no","yes"))
+roc.lasso = performance(results.lasso, measure = "tpr", x.measure = "fpr")
+plot(roc.lasso,colorize = TRUE)
+abline(a=0, b= 1)
+
+results.step<-prediction(fit.pred.step, test$y,label.ordering=c("no","yes"))
+roc.step = performance(results.step, measure = "tpr", x.measure = "fpr")
+plot(roc.step,colorize = TRUE)
+abline(a=0, b= 1)
+
+lasso.auc.train <- performance(results.lasso, measure = "auc")
+lasso.auc.train <- lasso.auc.train@y.values
+step.auc.train <- performance(results.step, measure = "auc")
+step.auc.train <- step.auc.train@y.values
+plot(roc.lasso,colorize = TRUE)
+plot(roc.step,col="orange", add = TRUE,colorize = TRUE)
+legend("bottomright",legend=c("Lasso","Stepwise"),col=c("black","orange"),lty=1,lwd=1)
+abline(a=0, b= 1)  #Ref line indicating poor performance
+text(x = .40, y = .6,paste("LASSO.AUC = ", round(lasso.auc.train[[1]],3), sep = ""))
+text(x = .40, y = .7,paste("STEP.AUC = ", round(step.auc.train[[1]],3), sep = ""))
+
+#Changed the cutoff value to 0.18 based on ROC curve
+cutoff<-0.18
+class.lasso<-factor(ifelse(fit.pred.lasso>cutoff,"yes","no"),levels=c("no","yes"))
+class.step<-factor(ifelse(fit.pred.step>cutoff,"yes","no"),levels=c("no","yes"))
+confusionMatrix(class.lasso,test$y)
+confusionMatrix(class.step,test$y)
+
+#Object 2
