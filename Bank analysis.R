@@ -11,6 +11,8 @@ library(epitools)
 library(glmnet)
 library(reshape2)
 library(caret)
+library(ROCR)
+library(randomForest)
 setwd("C:/Users/wrf0/Documents/SMU Data Science Program/Applied Statistics/Project 2")
 bank <- read.csv("Bank_Full.csv",header=T)
 head(bank)
@@ -220,7 +222,7 @@ exp(cbind("Odds ratio" = coef(newmodel), confint.default(newmodel, level = 0.95)
 #data.frame(name = tmp_coeffs@Dimnames[[1]][tmp_coeffs@i + 1], coefficient = tmp_coeffs@x)
 
 
-dat.test.x<-model.matrix(y~job+marital+education+default+balance+housing+loan+contact+month+duration+poutcome-1,test)
+dat.test.x<-model.matrix(y~job+marital+education+balance+default+housing+loan+contact+month+duration+poutcome-1,test)
 fit.pred.lasso <- predict(finalmodel, newx = dat.test.x, type = "response")
 fit.pred.step<-predict(renfeng.step.log,newdata=test,type="response")
 
@@ -259,3 +261,186 @@ confusionMatrix(class.lasso,test$y)
 confusionMatrix(class.step,test$y)
 
 #Object 2
+#We will use job+month+marital+education+balance+housing+loan+contact+poutcome+duration plus interaction items
+#and quadratic items to make model more complicated.
+#poutcome:duration, balance:loan, balance:housing, job:education
+train.x <- model.matrix(y~job+marital+education+balance+housing+loan+contact+month+duration+poutcome
+                            +poutcome:duration+balance:loan+balance:housing+job:education-1,train)
+train.y<-train[,c('y')]
+cvfit.interaction <- cv.glmnet(train.x, train.y, family = "binomial", type.measure = "class", nlambda = 1000)
+plot(cvfit.interaction)
+coef(cvfit.interaction, s = "lambda.min")
+print(cvfit.interaction)
+
+cvfit.interaction$cvm[which(cvfit.interaction$lambda==cvfit.interaction$lambda.min)]
+
+cvfit.interaction$lambda.min
+
+interaction.model<-glmnet(train.x, train.y, family = "binomial",lambda=cvfit.interaction$lambda.min)
+coef(interaction.model)
+
+#job, marital,education,balance,housing,loan,contact,month,duration,poutcome,poutcome:duration,job:education were left in the model
+test.x<-model.matrix(y~job+marital+education+balance+housing+loan+contact+month+duration+poutcome+
+                       poutcome:duration+job:education+balance:loan+balance:housing-1,test)
+fit.interaction.lasso <- predict(interaction.model, newx = test.x, type = "response")
+
+cutoff<-0.5
+interaction.lasso<-factor(ifelse(fit.interaction.lasso>cutoff,"yes","no"),levels=c("no","yes"))
+
+confusionMatrix(interaction.lasso,test$y)
+
+
+results.interaction<-prediction(fit.interaction.lasso, test$y,label.ordering=c("no","yes"))
+roc.interaction = performance(results.interaction, measure = "tpr", x.measure = "fpr")
+plot(roc.interaction,colorize = TRUE)
+abline(a=0, b= 1)
+
+interaction.auc.train <- performance(results.interaction, measure = "auc")
+interaction.auc.train <- interaction.auc.train@y.values
+
+plot(roc.interaction,colorize = TRUE)
+
+legend("bottomright",legend=c("Interaction"),col=c("black"),lty=1,lwd=1)
+abline(a=0, b= 1) 
+text(x = .40, y = .6,paste("LASSO.AUC = ", round(interaction.auc.train[[1]],3), sep = ""))
+
+#The model with interaction items is not as well as the model in object 1, let's try different model.
+train.x.2 <- model.matrix(y~job+marital+education+balance+housing+loan+contact+month+duration+poutcome
+                          +marital:housing+contact:job+I(balance^2)+I(duration^2)-1,train)
+train.y<-train[,c('y')]
+cvfit.interaction.2 <- cv.glmnet(train.x.2, train.y, family = "binomial", type.measure = "class", nlambda = 1000)
+plot(cvfit.interaction.2)
+coef(cvfit.interaction.2, s = "lambda.min")
+print(cvfit.interaction.2)
+
+cvfit.interaction.2$cvm[which(cvfit.interaction.2$lambda==cvfit.interaction.2$lambda.min)]
+
+cvfit.interaction.2$lambda.min
+
+interaction.model.2<-glmnet(train.x.2, train.y, family = "binomial",lambda=cvfit.interaction.2$lambda.min)
+coef(interaction.model.2)
+
+
+test.x.2<-model.matrix(y~job+marital+education+balance+housing+loan+contact+month+duration+poutcome
+                       +marital:housing+contact:job+I(balance^2)+I(duration^2)-1,test)
+fit.interaction.lasso.2 <- predict(interaction.model.2, newx = test.x.2, type = "response")
+
+cutoff<-0.5
+interaction.lasso.2<-factor(ifelse(fit.interaction.lasso.2>cutoff,"yes","no"),levels=c("no","yes"))
+
+confusionMatrix(interaction.lasso.2,test$y)
+
+
+results.interaction.2<-prediction(fit.interaction.lasso.2, test$y,label.ordering=c("no","yes"))
+roc.interaction.2 = performance(results.interaction.2, measure = "tpr", x.measure = "fpr")
+plot(roc.interaction.2,colorize = TRUE)
+abline(a=0, b= 1)
+
+interaction.auc.train.2 <- performance(results.interaction.2, measure = "auc")
+interaction.auc.train.2 <- interaction.auc.train.2@y.values
+
+plot(roc.interaction.2,colorize = TRUE)
+
+legend("bottomright",legend=c("Interaction"),col=c("black"),lty=1,lwd=1)
+abline(a=0, b= 1) 
+text(x = .40, y = .6,paste("LASSO.AUC = ", round(interaction.auc.train.2[[1]],3), sep = ""))
+
+cutoff<-0.18
+interaction.lasso.2<-factor(ifelse(fit.interaction.lasso.2>cutoff,"yes","no"),levels=c("no","yes"))
+confusionMatrix(interaction.lasso.2,test$y)
+
+#Let's find the optimal cutoff point for the model we use in object 1 and 2
+opt.cut = function(perf, pred){
+  cut.ind = mapply(FUN=function(x, y, p){
+    d = (x - 0)^2 + (y-1)^2
+    ind = which(d == min(d))
+    c(sensitivity = y[[ind]], specificity = 1-x[[ind]], 
+      cutoff = p[[ind]])
+  }, perf@x.values, perf@y.values, pred@cutoffs)
+}
+print(opt.cut(roc.interaction.2, results.interaction.2)) #Model 2 in object 2
+
+print(opt.cut(roc.interaction, results.interaction))  #Model 1 in object 2
+
+print(opt.cut(roc.lasso, results.lasso)) #LASSO model in object 1
+
+print(opt.cut(roc.step, results.step))  #Stepwise model in object 1
+
+#LDA or QDA with continuous variables.
+bank.numeric = bank[,c('age','balance','day','duration','campaign','pdays','previous','y')]
+head(bank.numeric)  #balance and duration are the only continuous variables we used in previous models.
+
+#Let's fit balance and duration first
+plot(bank.numeric[,c('balance','duration')],col=bank.numeric$y,main='LDA') #There is no clear separation.
+
+lda.model = lda(y~balance+duration,data=train)
+lda.predict=predict(lda.model,newdata=test)$class
+confusionMatrix(lda.predict,test$y)  #Sensitivity is pretty low.
+
+#Let's try to fit all continuous variables.
+set.seed(1234)
+index.lda<-sample(1:nrow(bank),round(.8*nrow(bank)),replace=FALSE)
+test.lda<-bank[-index.lda,]
+train.lda<-bank[index.lda,]
+lda.model.full = lda(y~age+balance+day+duration+campaign+pdays+previous,data=train.lda)
+lda.predict.full=predict(lda.model.full,newdata=test.lda)$class
+confusionMatrix(lda.predict.full,test.lda$y)  #Sensitivity is pretty low.
+
+#Let's try QDA
+qda.model.full = qda(y~age+balance+day+duration+campaign+pdays+previous,data=train.lda)
+qda.predict.full=predict(qda.model.full,newdata=test.lda)$class
+confusionMatrix(qda.predict.full,test.lda$y)  #Best in three models
+
+qda.model = qda(y~balance+duration,data=train.lda)
+qda.predict=predict(qda.model,newdata=test.lda)$class
+confusionMatrix(qda.predict,test.lda$y)  #not well predicted, similar as LDA
+
+#I used full QDA model to create ROC plot.
+qda.predict.full.1=predict(qda.model.full,newdata=test.lda)
+preds.QDA<- qda.predict.full.1$posterior
+preds.QDA <- as.data.frame(preds.QDA)
+results.QDA<-prediction(preds.QDA[,2], test.lda$y)
+roc.QDA = performance(results.QDA, measure = "tpr", x.measure = "fpr")
+auc.QDA <- performance(results.QDA, measure = "auc")
+auc.QDA <- auc.QDA@y.values
+plot(roc.QDA,colorize = TRUE)
+abline(a=0, b= 1)
+text(x = .40, y = .6,paste("AUC = ", round(auc.QDA[[1]],3), sep = ""))
+
+#Random Forest model, we still use newbank dataset after we completed the EDA.
+model.rf=randomForest(y~.,data=train,mtry=4,ntree=500,importance=T)
+pred.rf=predict(model.rf,newdata=test,type='prob')
+results.rf<-prediction(pred.rf[,2], test$y)
+roc.rf = performance(results.rf, measure = "tpr", x.measure = "fpr")
+auc.rf <- performance(results.rf, measure = "auc")
+auc.rf <- auc.rf@y.values
+plot(roc.rf,colorize = TRUE)
+abline(a=0, b= 1)
+text(x = .40, y = .6,paste("AUC = ", round(auc.rf[[1]],3), sep = ""))
+confusionMatrix(predict(model.rf,newdata=test),test$y) 
+
+#Use for loop to check different mtry values.
+a=c()
+i=floor(sqrt(ncol(train)))
+for (i in floor(sqrt(ncol(train))):8) {
+  model.rf.i <- randomForest(y~., data = train, ntree = 500, mtry = i, importance = TRUE)
+  pred.rf.i <- predict(model.rf.i, newdata=test, type = "class")
+  a[i-2] = mean(pred.rf.i == test$y)
+}
+a
+plot(floor(sqrt(ncol(train))):8,a)
+
+
+print(opt.cut(roc.rf, results.rf))
+
+#set cutoff=0.162,mtry=4
+model.rf=randomForest(y~.,data=train,mtry=4,ntree=500,importance=T,cutoff=c(.838,0.162))
+pred.rf=predict(model.rf,newdata=test,type='prob')
+results.rf<-prediction(pred.rf[,2], test$y)
+roc.rf = performance(results.rf, measure = "tpr", x.measure = "fpr")
+auc.rf <- performance(results.rf, measure = "auc")
+auc.rf <- auc.rf@y.values
+plot(roc.rf,colorize = TRUE)
+abline(a=0, b= 1)
+text(x = .40, y = .6,paste("AUC = ", round(auc.rf[[1]],3), sep = ""))
+confusionMatrix(predict(model.rf,newdata=test),test$y) 
