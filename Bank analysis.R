@@ -30,15 +30,14 @@ bank$month=as.factor(bank$month)
 bank$poutcome=as.factor(bank$poutcome)
 
 attach(bank)
-
+summary(bank)
 prop.table(table(y,marital),2)
 plot(y~marital,col=c("red","blue"))
 
 t(aggregate(balance~y,data=bank,summary))
 plot(balance~y,col=c("red","blue"))
 
-prop.table(table(y,education),2)
-plot(y~education,col=c("red","blue"))
+A
 
 prop.table(table(y,default),2)
 plot(y~default,col=c("red","blue")) #Looks good in separation
@@ -198,6 +197,7 @@ renfeng.step.log<-renfeng.full.log %>% stepAIC(trace=FALSE)
 coef(renfeng.full.log)
 coef(renfeng.step.log)
 vif(renfeng.step.log)  
+vif(renfeng.full.log)  
 
 #LASSO model
 dat.train.x <- model.matrix(y~job+marital+education+default+balance+housing+loan+contact+month+duration+poutcome-1,train)
@@ -220,7 +220,7 @@ confint.default(newmodel,level = 0.95)
 exp(cbind("Odds ratio" = coef(newmodel), confint.default(newmodel, level = 0.95)))
 #tmp_coeffs <- coef(cvfit, s = "lambda.min")
 #data.frame(name = tmp_coeffs@Dimnames[[1]][tmp_coeffs@i + 1], coefficient = tmp_coeffs@x)
-
+vif(newmodel)
 
 dat.test.x<-model.matrix(y~job+marital+education+balance+default+housing+loan+contact+month+duration+poutcome-1,test)
 fit.pred.lasso <- predict(finalmodel, newx = dat.test.x, type = "response")
@@ -253,8 +253,8 @@ abline(a=0, b= 1)  #Ref line indicating poor performance
 text(x = .40, y = .6,paste("LASSO.AUC = ", round(lasso.auc.train[[1]],3), sep = ""))
 text(x = .40, y = .7,paste("STEP.AUC = ", round(step.auc.train[[1]],3), sep = ""))
 
-#Changed the cutoff value to 0.18 based on ROC curve
-cutoff<-0.18
+#Changed the cutoff value to 0.09656392 based on ROC curve
+cutoff<-0.09656392
 class.lasso<-factor(ifelse(fit.pred.lasso>cutoff,"yes","no"),levels=c("no","yes"))
 class.step<-factor(ifelse(fit.pred.step>cutoff,"yes","no"),levels=c("no","yes"))
 confusionMatrix(class.lasso,test$y)
@@ -345,7 +345,7 @@ legend("bottomright",legend=c("Interaction"),col=c("black"),lty=1,lwd=1)
 abline(a=0, b= 1) 
 text(x = .40, y = .6,paste("LASSO.AUC = ", round(interaction.auc.train.2[[1]],3), sep = ""))
 
-cutoff<-0.18
+cutoff<-0.1083344
 interaction.lasso.2<-factor(ifelse(fit.interaction.lasso.2>cutoff,"yes","no"),levels=c("no","yes"))
 confusionMatrix(interaction.lasso.2,test$y)
 
@@ -408,7 +408,7 @@ abline(a=0, b= 1)
 text(x = .40, y = .6,paste("AUC = ", round(auc.QDA[[1]],3), sep = ""))
 
 #Random Forest model, we still use newbank dataset after we completed the EDA.
-model.rf=randomForest(y~.,data=train,mtry=4,ntree=500,importance=T)
+model.rf=randomForest(y~.,data=train,mtry=7,ntree=1000,importance=T)
 pred.rf=predict(model.rf,newdata=test,type='prob')
 results.rf<-prediction(pred.rf[,2], test$y)
 roc.rf = performance(results.rf, measure = "tpr", x.measure = "fpr")
@@ -419,22 +419,13 @@ abline(a=0, b= 1)
 text(x = .40, y = .6,paste("AUC = ", round(auc.rf[[1]],3), sep = ""))
 confusionMatrix(predict(model.rf,newdata=test),test$y) 
 
-#Use for loop to check different mtry values.
-a=c()
-i=floor(sqrt(ncol(train)))
-for (i in floor(sqrt(ncol(train))):8) {
-  model.rf.i <- randomForest(y~., data = train, ntree = 500, mtry = i, importance = TRUE)
-  pred.rf.i <- predict(model.rf.i, newdata=test, type = "class")
-  a[i-2] = mean(pred.rf.i == test$y)
-}
-a
-plot(floor(sqrt(ncol(train))):8,a)
+
 
 
 print(opt.cut(roc.rf, results.rf))
 
-#set cutoff=0.162,mtry=4
-model.rf=randomForest(y~.,data=train,mtry=4,ntree=500,importance=T,cutoff=c(.838,0.162))
+#set cutoff=0.141,mtry=7
+model.rf=randomForest(y~.,data=train,mtry=7,ntree=1000,importance=T,cutoff=c(.859,0.141))
 pred.rf=predict(model.rf,newdata=test,type='prob')
 results.rf<-prediction(pred.rf[,2], test$y)
 roc.rf = performance(results.rf, measure = "tpr", x.measure = "fpr")
@@ -444,3 +435,79 @@ plot(roc.rf,colorize = TRUE)
 abline(a=0, b= 1)
 text(x = .40, y = .6,paste("AUC = ", round(auc.rf[[1]],3), sep = ""))
 confusionMatrix(predict(model.rf,newdata=test),test$y) 
+varImpPlot(model.rf)
+
+
+#Use caret package to do cross validation. Don't need to run the code below
+set.seed(1234)
+
+trControl <- trainControl(method = "cv", number = 10, search = "grid")
+
+#Search best mtry
+tuneGrid <- expand.grid(.mtry = c(3: 11))
+rf_mtry <- train(y~.,
+                 data = train,
+                 method = "rf",
+                 metric = "Accuracy",
+                 tuneGrid = tuneGrid,
+                 trControl = trControl,
+                 importance = TRUE,
+                 ntree = 100)
+print(rf_mtry)
+max(rf_mtry$results$Accuracy)
+best_mtry <- rf_mtry$bestTune$mtry 
+best_mtry
+
+#Search best maxnodes
+store_maxnode <- list()
+tuneGrid <- expand.grid(.mtry = best_mtry)
+for (maxnodes in c(5: 15)) {
+  rf_maxnode <- train(y~.,
+                      data = train,
+                      method = "rf",
+                      metric = "Accuracy",
+                      tuneGrid = tuneGrid,
+                      trControl = trControl,
+                      importance = TRUE,
+                      maxnodes = maxnodes,
+                      ntree = 100)
+  current_iteration <- toString(maxnodes)
+  store_maxnode[[current_iteration]] <- rf_maxnode
+}
+results_mtry <- resamples(store_maxnode)
+summary(results_mtry)
+
+store_maxnode <- list()
+tuneGrid <- expand.grid(.mtry = best_mtry)
+for (maxnodes in c(15: 25)) {
+  rf_maxnode <- train(y~.,
+                      data = train,
+                      method = "rf",
+                      metric = "Accuracy",
+                      tuneGrid = tuneGrid,
+                      trControl = trControl,
+                      importance = TRUE,
+                      maxnodes = maxnodes,
+                      ntree = 100)
+  current_iteration <- toString(maxnodes)
+  store_maxnode[[current_iteration]] <- rf_maxnode
+}
+results_mtry <- resamples(store_maxnode)
+summary(results_mtry)
+#search the best ntrees, when maxnodes=15, it gave the best result
+store_maxtrees <- list()
+for (ntree in c(250, 300, 350, 400, 450, 500,1000)) {
+  rf_maxtrees <- train(y~.,
+                       data = train,
+                       method = "rf",
+                       metric = "Accuracy",
+                       tuneGrid = tuneGrid,
+                       trControl = trControl,
+                       importance = TRUE,
+                       maxnodes = 15,
+                       ntree = ntree)
+  key <- toString(ntree)
+  store_maxtrees[[key]] <- rf_maxtrees
+}
+results_tree <- resamples(store_maxtrees)
+summary(results_tree)
